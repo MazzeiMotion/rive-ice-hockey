@@ -73,7 +73,7 @@ type IceHockeyV1 = {
   dragTarget: Entity?,
 
   -- Player Data (Loaded via Require)
-  p1Data: any, -- Typed as 'any' because strict typing cross-file can be tricky in some envs
+  p1Data: any,
   p2Data: any,
 
   -- Systems
@@ -309,7 +309,6 @@ local function createMainArtboards(self: IceHockeyV1)
         if inst.data.sizeY then
           inst.data.sizeY.value = self.p1.baseRadius * 2
         end
-        -- Use Data from External Module
         if inst.data.color then
           inst.data.color.value = self.p1Data.color
         end
@@ -405,7 +404,7 @@ function init(self: IceHockeyV1): boolean
     vy = 0,
     mass = 10,
     radius = 30,
-    baseRadius = 30,
+    baseRadius = 40,
     friction = 0.92,
     baseFriction = 0.92,
     effects = {},
@@ -417,7 +416,7 @@ function init(self: IceHockeyV1): boolean
     vy = 0,
     mass = 10,
     radius = 30,
-    baseRadius = 30,
+    baseRadius = 40,
     friction = 0.92,
     baseFriction = 0.92,
     effects = {},
@@ -450,14 +449,28 @@ function advance(self: IceHockeyV1, seconds: number): boolean
   manageStatusEffects(self.p1, seconds)
   manageStatusEffects(self.p2, seconds)
 
-  -- Sync Visuals
+  -- Sync Visuals & UPDATE PUSHER ANGLE
   if self.p1Instance and self.p1Instance.data then
     self.p1Instance.data.sizeX.value = self.p1.radius * 2
     self.p1Instance.data.sizeY.value = self.p1.radius * 2
+
+    -- [NEW] Calculate Angle based on Vertical Position
+    -- Map: 0 (top) -> -100, fH (bottom) -> 100
+    if self.p1Instance.data.pusherAngle then
+      local angle = (self.p1.y / fH) * 200 - 100
+      self.p1Instance.data.pusherAngle.value = angle
+    end
   end
+
   if self.p2Instance and self.p2Instance.data then
     self.p2Instance.data.sizeX.value = self.p2.radius * 2
     self.p2Instance.data.sizeY.value = self.p2.radius * 2
+
+    -- [NEW] Calculate Angle based on Vertical Position
+    if self.p2Instance.data.pusherAngle then
+      local angle = (self.p2.y / fH) * 200 - 100
+      self.p2Instance.data.pusherAngle.value = angle
+    end
   end
 
   -- 2. PHYSICS
