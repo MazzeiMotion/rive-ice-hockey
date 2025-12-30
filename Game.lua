@@ -1,31 +1,25 @@
+local PlayerData = require('PlayerData')
+
 -- ===========================================================================
 -- SECTION 1: TYPE DEFINITIONS
 -- ===========================================================================
 
--- Temporary Effect applied to a player
 type StatusEffect = {
-  kind: string, -- "giantPaddle", "tinyPaddle", etc.
-  timer: number, -- Seconds remaining
-  duration: number, -- Total duration (for potential UI bars)
+  kind: string,
+  timer: number,
+  duration: number,
 }
 
--- Updated Entity with Base vs Current separation
 type Entity = {
   x: number,
   y: number,
   vx: number,
   vy: number,
   mass: number,
-
-  -- Current (Calculated every frame)
   radius: number,
   friction: number,
-
-  -- Base (Defaults)
   baseRadius: number,
   baseFriction: number,
-
-  -- Active Effects
   effects: { StatusEffect },
 }
 
@@ -40,19 +34,20 @@ type Powerup = {
   instance: Artboard<Data.PowerupVM>?,
 }
 
+-- Main Game Type
 type IceHockeyV1 = {
-  -- Configuration Inputs
+  -- Config Inputs
   fieldWidth: Input<number>,
   fieldHeight: Input<number>,
   maxPuckSpeed: Input<number>,
 
-  -- Game Rules
+  -- Rules Inputs
   maxPowerups: Input<number>,
   spawnRate: Input<number>,
   maxZoneTime: Input<number>,
   pointsToWin: Input<number>,
 
-  -- Names
+  -- Player Inputs
   player1Name: Input<string>,
   player2Name: Input<string>,
 
@@ -68,23 +63,23 @@ type IceHockeyV1 = {
   p2Instance: Artboard<Data.PlayerVM>?,
   puckInstance: Artboard<Data.PuckVM>?,
 
-  -- State
+  -- Physics State
   puck: Entity,
   p1: Entity,
   p2: Entity,
 
-  score1: number,
-  score2: number,
+  -- Game State
   lastTouchedBy: number,
   dragTarget: Entity?,
 
-  p1Data: { name: string, color: number },
-  p2Data: { name: string, color: number },
+  -- Player Data (Loaded via Require)
+  p1Data: any, -- Typed as 'any' because strict typing cross-file can be tricky in some envs
+  p2Data: any,
 
+  -- Systems
   powerups: { Powerup },
   spawnTimer: number,
   nextId: number,
-
   activeG1Height: number,
   activeG2Height: number,
   zoneTimer: number,
@@ -92,7 +87,7 @@ type IceHockeyV1 = {
 }
 
 -- ===========================================================================
--- SECTION 2: MATH & PHYSICS HELPERS
+-- SECTION 2: MATH & PHYSICS
 -- ===========================================================================
 
 local function dist(x1: number, y1: number, x2: number, y2: number): number
@@ -112,11 +107,10 @@ local function resolveCollision(
   local dx = puck.x - player.x
   local dy = puck.y - player.y
   local distance = math.sqrt(dx * dx + dy * dy)
-  local minDist = player.radius + puck.radius -- Uses dynamic radius
+  local minDist = player.radius + puck.radius
 
   if distance < minDist then
     self.lastTouchedBy = playerId
-
     local nx = dx / distance
     local ny = dy / distance
     local overlap = minDist - distance
@@ -125,12 +119,11 @@ local function resolveCollision(
 
     local dvx = puck.vx - player.vx
     local dvy = puck.vy - player.vy
-
     local dot = (dvx * nx) + (dvy * ny)
+
     if dot < 0 then
       local restitution = 0.8
       local impulse = -(1 + restitution) * dot
-
       puck.vx = puck.vx + (impulse * nx)
       puck.vy = puck.vy + (impulse * ny)
 
@@ -154,58 +147,38 @@ local function resetPuck(self: IceHockeyV1)
   self.lastTouchedBy = 0
   self.zoneTimer = 0
   self.currentZone = 0
-
   local dir = (math.random() > 0.5) and 1 or -1
   self.puck.vx = 300 * dir
   self.puck.vy = (math.random() * 200) - 100
-end
-
--- Color Helper: Convert Hex to Signed Integer
-local function toColor(hex: number): number
-  if hex > 0x7FFFFFFF then
-    return hex - 0x100000000
-  end
-  return hex
 end
 
 -- ===========================================================================
 -- SECTION 3: STATUS EFFECTS & POWERUPS
 -- ===========================================================================
 
--- 1. Helper to add or refresh an effect
 local function addStatusEffect(entity: Entity, kind: string, duration: number)
-  -- Check if effect exists
   for _, fx in ipairs(entity.effects) do
     if fx.kind == kind then
-      fx.timer = duration -- Refresh timer
+      fx.timer = duration
       return
     end
   end
-  -- Add new
   table.insert(
     entity.effects,
     { kind = kind, timer = duration, duration = duration }
   )
 end
 
--- 2. System to recalculate stats every frame
 local function manageStatusEffects(entity: Entity, seconds: number)
-  -- Reset to Base
   entity.radius = entity.baseRadius
   entity.friction = entity.baseFriction
-
-  -- Process Effects
   for i = #entity.effects, 1, -1 do
     local fx = entity.effects[i]
-
-    -- Apply Modifiers
     if fx.kind == 'giantPaddle' then
       entity.radius = entity.baseRadius * 1.5
     elseif fx.kind == 'tinyPaddle' then
       entity.radius = entity.baseRadius * 0.7
     end
-
-    -- Tick Timer
     fx.timer = fx.timer - seconds
     if fx.timer <= 0 then
       table.remove(entity.effects, i)
@@ -222,27 +195,22 @@ local function applyPowerup(
     or self.p2Data.name
   print('Applying Powerup: ' .. kind .. ' to ' .. recipientName)
 
-  -- GOAL MODIFIERS (Permanent)
   if kind == 'smallerGoal' then
     if recipientId == 1 then
       self.activeG1Height = clamp(self.activeG1Height - 5, 5, 90)
-    elseif recipientId == 2 then
+    else
       self.activeG2Height = clamp(self.activeG2Height - 5, 5, 90)
     end
   elseif kind == 'biggerGoal' then
     if recipientId == 1 then
       self.activeG2Height = clamp(self.activeG2Height + 5, 5, 90)
-    elseif recipientId == 2 then
+    else
       self.activeG1Height = clamp(self.activeG1Height + 5, 5, 90)
     end
-
-  -- ENTITY MODIFIERS (Temporary)
-  -- Logic: Some buffs go to self, debuffs go to opponent
   elseif kind == 'giantPaddle' then
     local target = (recipientId == 1) and self.p1 or self.p2
     addStatusEffect(target, 'giantPaddle', 8.0)
   elseif kind == 'tinyPaddle' then
-    -- Debuff: Apply to opponent
     local target = (recipientId == 1) and self.p2 or self.p1
     addStatusEffect(target, 'tinyPaddle', 8.0)
   end
@@ -252,53 +220,43 @@ local function spawnPowerup(self: IceHockeyV1)
   if #self.powerups >= self.maxPowerups then
     return
   end
-
   local padding = 50
-  local fW = self.fieldWidth
-  local fH = self.fieldHeight
+  local fW, fH = self.fieldWidth, self.fieldHeight
   local px = math.random(padding, fW - padding)
   local py = math.random(padding, fH - padding)
-
-  -- Updated Pool
-  local possibleKinds =
-    { 'smallerGoal', 'biggerGoal', 'giantPaddle', 'tinyPaddle' }
-  local chosenKind = possibleKinds[math.random(1, #possibleKinds)]
+  local kinds = { 'smallerGoal', 'biggerGoal', 'giantPaddle', 'tinyPaddle' }
+  local kind = kinds[math.random(1, #kinds)]
 
   local inst = nil
   if self.powerupArtboard then
     inst = self.powerupArtboard:instance()
   end
-
-  local radius = 30
-
   if inst and inst.data then
     if inst.data.sizeX then
-      inst.data.sizeX.value = radius * 2
+      inst.data.sizeX.value = 60
     end
     if inst.data.sizeY then
-      inst.data.sizeY.value = radius * 2
+      inst.data.sizeY.value = 60
     end
     if inst.data.lifecycle then
       inst.data.lifecycle.value = 100
     end
     if inst.data.kind then
-      inst.data.kind.value = chosenKind
+      inst.data.kind.value = kind
     end
   end
 
-  local newPowerup = {
+  table.insert(self.powerups, {
     id = self.nextId,
     x = px,
     y = py,
-    radius = radius,
-    kind = chosenKind,
+    radius = 30,
+    kind = kind,
     lifespan = 10.0,
     maxLifespan = 10.0,
     instance = inst,
-  }
-
+  })
   self.nextId = self.nextId + 1
-  table.insert(self.powerups, newPowerup)
 end
 
 local function updatePowerups(self: IceHockeyV1, seconds: number)
@@ -313,20 +271,18 @@ local function updatePowerups(self: IceHockeyV1, seconds: number)
   for i = #self.powerups, 1, -1 do
     local p = self.powerups[i]
     p.lifespan = p.lifespan - seconds
-
     if p.lifespan <= 0 then
       table.remove(self.powerups, i)
     else
       if p.instance then
         p.instance:advance(seconds)
         if p.instance.data and p.instance.data.lifecycle then
-          local pct = (p.lifespan / p.maxLifespan) * 100
-          p.instance.data.lifecycle.value = pct
+          p.instance.data.lifecycle.value = (p.lifespan / p.maxLifespan) * 100
         end
       end
-
-      local distToPuck = dist(p.x, p.y, self.puck.x, self.puck.y)
-      if distToPuck < (p.radius + self.puck.radius) then
+      if
+        dist(p.x, p.y, self.puck.x, self.puck.y) < (p.radius + self.puck.radius)
+      then
         if self.lastTouchedBy ~= 0 then
           applyPowerup(self, p.kind, self.lastTouchedBy)
           table.remove(self.powerups, i)
@@ -346,7 +302,6 @@ local function createMainArtboards(self: IceHockeyV1)
     local inst = self.playerArtboard:instance()
     if inst then
       self.p1Instance = inst
-      -- Initial setup
       if inst.data then
         if inst.data.sizeX then
           inst.data.sizeX.value = self.p1.baseRadius * 2
@@ -354,8 +309,9 @@ local function createMainArtboards(self: IceHockeyV1)
         if inst.data.sizeY then
           inst.data.sizeY.value = self.p1.baseRadius * 2
         end
+        -- Use Data from External Module
         if inst.data.color then
-          inst.data.color.value = toColor(0xFF0000FF)
+          inst.data.color.value = self.p1Data.color
         end
       end
     end
@@ -373,7 +329,7 @@ local function createMainArtboards(self: IceHockeyV1)
           inst.data.sizeY.value = self.p2.baseRadius * 2
         end
         if inst.data.color then
-          inst.data.color.value = toColor(0xFFFF0000)
+          inst.data.color.value = self.p2Data.color
         end
       end
     end
@@ -400,19 +356,22 @@ end
 -- ===========================================================================
 
 function pointerDown(self: IceHockeyV1, event: PointerEvent)
-  local x = event.position.x
-  local y = event.position.y
-  if dist(x, y, self.p1.x, self.p1.y) < self.p1.radius * 1.5 then
+  if
+    dist(event.position.x, event.position.y, self.p1.x, self.p1.y)
+    < self.p1.radius * 1.5
+  then
     self.dragTarget = self.p1
-  elseif dist(x, y, self.p2.x, self.p2.y) < self.p2.radius * 1.5 then
+  elseif
+    dist(event.position.x, event.position.y, self.p2.x, self.p2.y)
+    < self.p2.radius * 1.5
+  then
     self.dragTarget = self.p2
   end
 end
 
 function pointerMove(self: IceHockeyV1, event: PointerEvent)
   if self.dragTarget then
-    local oldX = self.dragTarget.x
-    local oldY = self.dragTarget.y
+    local oldX, oldY = self.dragTarget.x, self.dragTarget.y
     self.dragTarget.x = event.position.x
     self.dragTarget.y = event.position.y
     self.dragTarget.vx = (self.dragTarget.x - oldX) / 0.016
@@ -425,10 +384,8 @@ function pointerUp(self: IceHockeyV1, event: PointerEvent)
 end
 
 function init(self: IceHockeyV1): boolean
-  local fW = self.fieldWidth
-  local fH = self.fieldHeight
+  local fW, fH = self.fieldWidth, self.fieldHeight
 
-  -- Initialize Entities with Base Stats
   self.puck = {
     x = fW / 2,
     y = fH / 2,
@@ -466,8 +423,6 @@ function init(self: IceHockeyV1): boolean
     effects = {},
   }
 
-  self.score1 = 0
-  self.score2 = 0
   self.lastTouchedBy = 0
   self.dragTarget = nil
   self.powerups = {}
@@ -475,12 +430,12 @@ function init(self: IceHockeyV1): boolean
   self.nextId = 1
   self.activeG1Height = 30
   self.activeG2Height = 30
-
   self.zoneTimer = 0
   self.currentZone = 0
 
-  self.p1Data = { name = self.player1Name, color = toColor(0xFF0000FF) }
-  self.p2Data = { name = self.player2Name, color = toColor(0xFFFF0000) }
+  -- Init Player Data using the Helper
+  self.p1Data = PlayerData.new(self.player1Name, 0xFF3333CC)
+  self.p2Data = PlayerData.new(self.player2Name, 0xFFCC3333)
 
   createMainArtboards(self)
   resetPuck(self)
@@ -489,15 +444,13 @@ end
 
 function advance(self: IceHockeyV1, seconds: number): boolean
   createMainArtboards(self)
+  local fW, fH = self.fieldWidth, self.fieldHeight
 
-  local fW = self.fieldWidth
-  local fH = self.fieldHeight
-
-  -- 1. APPLY STATUS EFFECTS (Recalculate dynamic stats)
+  -- 1. APPLY EFFECTS
   manageStatusEffects(self.p1, seconds)
   manageStatusEffects(self.p2, seconds)
 
-  -- Sync visual size for dynamic effects
+  -- Sync Visuals
   if self.p1Instance and self.p1Instance.data then
     self.p1Instance.data.sizeX.value = self.p1.radius * 2
     self.p1Instance.data.sizeY.value = self.p1.radius * 2
@@ -524,10 +477,9 @@ function advance(self: IceHockeyV1, seconds: number): boolean
     end
   end
 
-  -- 3. ZONE DETECTION
-  local midField = fW / 2
-  local newZone = (self.puck.x < midField) and 1 or 2
-
+  -- 3. ZONE
+  local mid = fW / 2
+  local newZone = (self.puck.x < mid) and 1 or 2
   if newZone ~= self.currentZone then
     self.currentZone = newZone
     self.zoneTimer = 0
@@ -536,21 +488,18 @@ function advance(self: IceHockeyV1, seconds: number): boolean
     if self.zoneTimer > self.maxZoneTime then
       local zOwner = (self.currentZone == 1) and self.p1Data.name
         or self.p2Data.name
-      print('TIME LIMIT: Puck stuck in ' .. zOwner .. '\'s Zone!')
+      print('TIME LIMIT: ' .. zOwner .. '\'s Zone!')
       self.zoneTimer = 0
     end
   end
 
-  -- 4. CONSTRAINTS (Using dynamic radius)
+  -- 4. CONSTRAINTS
   self.p1.x = clamp(self.p1.x, self.p1.radius, (fW / 2) - self.p1.radius)
   self.p1.y = clamp(self.p1.y, self.p1.radius, fH - self.p1.radius)
   self.p2.x = clamp(self.p2.x, (fW / 2) + self.p2.radius, fW - self.p2.radius)
   self.p2.y = clamp(self.p2.y, self.p2.radius, fH - self.p2.radius)
 
   -- 5. GOAL SYNC
-  local g1Px = fH * (self.activeG1Height / 100)
-  local g2Px = fH * (self.activeG2Height / 100)
-
   if self.player1Goal and self.player1Goal.height then
     self.player1Goal.height.value = self.activeG1Height
   end
@@ -558,7 +507,7 @@ function advance(self: IceHockeyV1, seconds: number): boolean
     self.player2Goal.height.value = self.activeG2Height
   end
 
-  -- 6. WALLS & GOALS
+  -- 6. WALLS
   if self.puck.y < self.puck.radius then
     self.puck.y = self.puck.radius
     self.puck.vy = math.abs(self.puck.vy)
@@ -567,19 +516,25 @@ function advance(self: IceHockeyV1, seconds: number): boolean
     self.puck.vy = -math.abs(self.puck.vy)
   end
 
+  local p1G = fH * (self.activeG1Height / 100)
+  local p2G = fH * (self.activeG2Height / 100)
+
   if self.puck.x < self.puck.radius then
-    local inGoal = (self.puck.y > (fH / 2 - g1Px / 2))
-      and (self.puck.y < (fH / 2 + g1Px / 2))
-    if not inGoal then
+    if
+      not (
+        self.puck.y > (fH / 2 - p1G / 2) and self.puck.y < (fH / 2 + p1G / 2)
+      )
+    then
       self.puck.x = self.puck.radius
       self.puck.vx = math.abs(self.puck.vx) * 0.8
     end
   end
-
   if self.puck.x > fW - self.puck.radius then
-    local inGoal = (self.puck.y > (fH / 2 - g2Px / 2))
-      and (self.puck.y < (fH / 2 + g2Px / 2))
-    if not inGoal then
+    if
+      not (
+        self.puck.y > (fH / 2 - p2G / 2) and self.puck.y < (fH / 2 + p2G / 2)
+      )
+    then
       self.puck.x = fW - self.puck.radius
       self.puck.vx = -math.abs(self.puck.vx) * 0.8
     end
@@ -593,50 +548,34 @@ function advance(self: IceHockeyV1, seconds: number): boolean
   updatePowerups(self, seconds)
 
   -- 9. SCORING
-  if self.puck.x < -self.puck.radius * 2 then
-    self.score2 = self.score2 + 1
-    if self.score2 >= self.pointsToWin then
-      print(
-        'GAME OVER! '
-          .. self.p2Data.name
-          .. ' Wins! (Final: '
-          .. self.score1
-          .. '-'
-          .. self.score2
-          .. ')'
-      )
-      self.score1 = 0
-      self.score2 = 0
+  if self.puck.x < -30 then
+    self.p2Data.score = self.p2Data.score + 1
+    if self.p2Data.score >= self.pointsToWin then
+      print('GAME OVER! ' .. self.p2Data.name .. ' Wins!')
+      self.p1Data.score = 0
+      self.p2Data.score = 0
       self.activeG1Height = 30
       self.activeG2Height = 30
     else
       local msg = (self.lastTouchedBy == 1)
-          and ('OWN GOAL! ' .. self.p1Data.name .. ' Self-Scored')
-        or ('GOAL! ' .. self.p2Data.name .. ' Scored!')
-      print(msg .. ' (Score: ' .. self.score1 .. '-' .. self.score2 .. ')')
+          and ('OWN GOAL! ' .. self.p1Data.name)
+        or ('GOAL! ' .. self.p2Data.name)
+      print(msg .. ' (' .. self.p1Data.score .. '-' .. self.p2Data.score .. ')')
     end
     resetPuck(self)
-  elseif self.puck.x > fW + self.puck.radius * 2 then
-    self.score1 = self.score1 + 1
-    if self.score1 >= self.pointsToWin then
-      print(
-        'GAME OVER! '
-          .. self.p1Data.name
-          .. ' Wins! (Final: '
-          .. self.score1
-          .. '-'
-          .. self.score2
-          .. ')'
-      )
-      self.score1 = 0
-      self.score2 = 0
+  elseif self.puck.x > fW + 30 then
+    self.p1Data.score = self.p1Data.score + 1
+    if self.p1Data.score >= self.pointsToWin then
+      print('GAME OVER! ' .. self.p1Data.name .. ' Wins!')
+      self.p1Data.score = 0
+      self.p2Data.score = 0
       self.activeG1Height = 30
       self.activeG2Height = 30
     else
       local msg = (self.lastTouchedBy == 2)
-          and ('OWN GOAL! ' .. self.p2Data.name .. ' Self-Scored')
-        or ('GOAL! ' .. self.p1Data.name .. ' Scored!')
-      print(msg .. ' (Score: ' .. self.score1 .. '-' .. self.score2 .. ')')
+          and ('OWN GOAL! ' .. self.p2Data.name)
+        or ('GOAL! ' .. self.p1Data.name)
+      print(msg .. ' (' .. self.p1Data.score .. '-' .. self.p2Data.score .. ')')
     end
     resetPuck(self)
   end
@@ -656,9 +595,7 @@ function advance(self: IceHockeyV1, seconds: number): boolean
 end
 
 function update(self: IceHockeyV1)
-  -- Enforce Boundaries
-  local fW = self.fieldWidth
-  local fH = self.fieldHeight
+  local fW, fH = self.fieldWidth, self.fieldHeight
   self.p1.x = clamp(self.p1.x, self.p1.radius, (fW / 2) - self.p1.radius)
   self.p1.y = clamp(self.p1.y, self.p1.radius, fH - self.p1.radius)
   self.p2.x = clamp(self.p2.x, (fW / 2) + self.p2.radius, fW - self.p2.radius)
@@ -666,6 +603,7 @@ function update(self: IceHockeyV1)
   self.puck.x = clamp(self.puck.x, self.puck.radius, fW - self.puck.radius)
   self.puck.y = clamp(self.puck.y, self.puck.radius, fH - self.puck.radius)
 
+  -- Sync Input Names
   self.p1Data.name = self.player1Name
   self.p2Data.name = self.player2Name
 end
@@ -674,8 +612,7 @@ function draw(self: IceHockeyV1, renderer: Renderer)
   local function drawEnt(inst: Artboard<any>?, e: Entity)
     if inst then
       renderer:save()
-      local m = Mat2D.withTranslation(e.x - e.radius, e.y - e.radius)
-      renderer:transform(m)
+      renderer:transform(Mat2D.withTranslation(e.x - e.radius, e.y - e.radius))
       inst:draw(renderer)
       renderer:restore()
     end
@@ -684,8 +621,7 @@ function draw(self: IceHockeyV1, renderer: Renderer)
   for _, p in ipairs(self.powerups) do
     if p.instance then
       renderer:save()
-      local m = Mat2D.withTranslation(p.x - p.radius, p.y - p.radius)
-      renderer:transform(m)
+      renderer:transform(Mat2D.withTranslation(p.x - p.radius, p.y - p.radius))
       p.instance:draw(renderer)
       renderer:restore()
     end
@@ -713,7 +649,6 @@ return function(): Node<IceHockeyV1>
     spawnRate = 3.0,
     maxZoneTime = 7.0,
     pointsToWin = 5,
-
     player1Name = 'Player 1',
     player2Name = 'Player 2',
 
@@ -771,14 +706,14 @@ return function(): Node<IceHockeyV1>
     powerups = {},
     spawnTimer = 0,
     nextId = 1,
-
     activeG1Height = 30,
     activeG2Height = 30,
-
     zoneTimer = 0,
     currentZone = 0,
 
-    p1Data = { name = 'P1', color = 0xFF999999 },
-    p2Data = { name = 'P2', color = 0xFF999999 },
+    -- These are just placeholders to satisfy the Type definition initially
+    -- They get overwritten by PlayerData.new() in init()
+    p1Data = { name = 'P1', color = 0, score = 0 },
+    p2Data = { name = 'P2', color = 0, score = 0 },
   }
 end
