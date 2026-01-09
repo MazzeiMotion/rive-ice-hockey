@@ -70,7 +70,8 @@ type IceHockeyV1 = {
 
   -- Game State
   lastTouchedBy: number,
-  dragTarget: Entity?,
+  -- [CHANGED] Map Pointer ID -> Entity for multi-touch
+  activeDrags: { [number]: Entity },
 
   -- Player Data (Loaded via Require)
   p1Data: any,
@@ -351,35 +352,39 @@ local function createMainArtboards(self: IceHockeyV1)
 end
 
 -- ===========================================================================
--- SECTION 5: INTERACTION & LIFECYCLE
+-- SECTION 5: INTERACTION & LIFECYCLE (MULTI-TOUCH)
 -- ===========================================================================
 
 function pointerDown(self: IceHockeyV1, event: PointerEvent)
+  -- [FIXED] Changed event.pointerId to event.id
   if
     dist(event.position.x, event.position.y, self.p1.x, self.p1.y)
-    < self.p1.radius * 1.5
+    < self.p1.radius * 2.0
   then
-    self.dragTarget = self.p1
+    self.activeDrags[event.id] = self.p1
   elseif
     dist(event.position.x, event.position.y, self.p2.x, self.p2.y)
-    < self.p2.radius * 1.5
+    < self.p2.radius * 2.0
   then
-    self.dragTarget = self.p2
+    self.activeDrags[event.id] = self.p2
   end
 end
 
 function pointerMove(self: IceHockeyV1, event: PointerEvent)
-  if self.dragTarget then
-    local oldX, oldY = self.dragTarget.x, self.dragTarget.y
-    self.dragTarget.x = event.position.x
-    self.dragTarget.y = event.position.y
-    self.dragTarget.vx = (self.dragTarget.x - oldX) / 0.016
-    self.dragTarget.vy = (self.dragTarget.y - oldY) / 0.016
+  -- [FIXED] Changed event.pointerId to event.id
+  local entity = self.activeDrags[event.id]
+  if entity then
+    local oldX, oldY = entity.x, entity.y
+    entity.x = event.position.x
+    entity.y = event.position.y
+    entity.vx = (entity.x - oldX) / 0.016
+    entity.vy = (entity.y - oldY) / 0.016
   end
 end
 
 function pointerUp(self: IceHockeyV1, event: PointerEvent)
-  self.dragTarget = nil
+  -- [FIXED] Changed event.pointerId to event.id
+  self.activeDrags[event.id] = nil
 end
 
 function init(self: IceHockeyV1): boolean
@@ -423,7 +428,7 @@ function init(self: IceHockeyV1): boolean
   }
 
   self.lastTouchedBy = 0
-  self.dragTarget = nil
+  self.activeDrags = {} -- Init Map
   self.powerups = {}
   self.spawnTimer = 0
   self.nextId = 1
@@ -433,12 +438,22 @@ function init(self: IceHockeyV1): boolean
   self.currentZone = 0
 
   -- Init Player Data using the Helper
-  self.p1Data = PlayerData.new(self.player1Name, 0xFF3333CC)
-  self.p2Data = PlayerData.new(self.player2Name, 0xFFCC3333)
+  self.p1Data = PlayerData.new(self.player1Name, 0xFFFF0F5C)
+  self.p2Data = PlayerData.new(self.player2Name, 0xFF3B6AFA)
 
   createMainArtboards(self)
   resetPuck(self)
   return true
+end
+
+-- Helper to check if an entity is currently being dragged
+local function isEntityDragging(self: IceHockeyV1, entity: Entity): boolean
+  for _, e in pairs(self.activeDrags) do
+    if e == entity then
+      return true
+    end
+  end
+  return false
 end
 
 function advance(self: IceHockeyV1, seconds: number): boolean
@@ -449,16 +464,14 @@ function advance(self: IceHockeyV1, seconds: number): boolean
   manageStatusEffects(self.p1, seconds)
   manageStatusEffects(self.p2, seconds)
 
-  -- Sync Visuals & UPDATE PUSHER ANGLE
+  -- Sync Visuals & UPDATE DRAGGING STATE
   if self.p1Instance and self.p1Instance.data then
     self.p1Instance.data.sizeX.value = self.p1.radius * 2
     self.p1Instance.data.sizeY.value = self.p1.radius * 2
 
-    -- [NEW] Calculate Angle based on Vertical Position
-    -- Map: 0 (top) -> -100, fH (bottom) -> 100
-    if self.p1Instance.data.pusherAngle then
-      local angle = (self.p1.y / fH) * 200 - 100
-      self.p1Instance.data.pusherAngle.value = angle
+    -- Sync isDragging (Multi-touch aware)
+    if self.p1Instance.data.isDragging then
+      self.p1Instance.data.isDragging.value = isEntityDragging(self, self.p1)
     end
   end
 
@@ -466,17 +479,17 @@ function advance(self: IceHockeyV1, seconds: number): boolean
     self.p2Instance.data.sizeX.value = self.p2.radius * 2
     self.p2Instance.data.sizeY.value = self.p2.radius * 2
 
-    -- [NEW] Calculate Angle based on Vertical Position
-    if self.p2Instance.data.pusherAngle then
-      local angle = (self.p2.y / fH) * 200 - 100
-      self.p2Instance.data.pusherAngle.value = angle
+    -- Sync isDragging (Multi-touch aware)
+    if self.p2Instance.data.isDragging then
+      self.p2Instance.data.isDragging.value = isEntityDragging(self, self.p2)
     end
   end
 
   -- 2. PHYSICS
+  -- Only apply friction/inertia if NOT being dragged
   local entities = { self.p1, self.p2, self.puck }
   for _, e in ipairs(entities) do
-    if self.dragTarget ~= e then
+    if not isEntityDragging(self, e) then
       e.x = e.x + (e.vx * seconds)
       e.y = e.y + (e.vy * seconds)
       e.vx = e.vx * (1 - (1 - e.friction))
@@ -716,6 +729,7 @@ return function(): Node<IceHockeyV1>
     score1 = 0,
     score2 = 0,
     lastTouchedBy = 0,
+    activeDrags = {},
     powerups = {},
     spawnTimer = 0,
     nextId = 1,
