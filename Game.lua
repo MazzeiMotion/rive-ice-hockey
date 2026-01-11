@@ -57,6 +57,7 @@ type IceHockeyV1 = {
   powerupArtboard: Input<Artboard<Data.PowerupVM>>,
   player1Goal: Input<Data.GoalVM>,
   player2Goal: Input<Data.GoalVM>,
+  score: Input<Data.ScoreVM>, -- New scoreboard view model
 
   -- Instances
   p1Instance: Artboard<Data.PlayerVM>?,
@@ -441,6 +442,28 @@ function init(self: IceHockeyV1): boolean
   self.p1Data = PlayerData.new(self.player1Name, 0xFFFF0F5C)
   self.p2Data = PlayerData.new(self.player2Name, 0xFF3B6AFA)
 
+  -- [NEW] Initialize Scoreboard
+  if self.score then
+    if self.score.player1Name then
+      self.score.player1Name.value = self.p1Data.name
+    end
+    if self.score.player2Name then
+      self.score.player2Name.value = self.p2Data.name
+    end
+    if self.score.player1Color then
+      self.score.player1Color.value = self.p1Data.color
+    end
+    if self.score.player2Color then
+      self.score.player2Color.value = self.p2Data.color
+    end
+    if self.score.player1Score then
+      self.score.player1Score.value = 0
+    end
+    if self.score.player2Score then
+      self.score.player2Score.value = 0
+    end
+  end
+
   createMainArtboards(self)
   resetPuck(self)
   return true
@@ -575,11 +598,35 @@ function advance(self: IceHockeyV1, seconds: number): boolean
 
   -- 9. SCORING
   if self.puck.x < -30 then
+    -- Player 2 Goal
     self.p2Data.score = self.p2Data.score + 1
+
+    -- [NEW] Update Scoreboard for P2
+    if self.score then
+      if self.score.player2Score then
+        self.score.player2Score.value = self.p2Data.score
+      end
+      if self.score.mainColor then
+        self.score.mainColor.value = self.p2Data.color
+      end
+      if self.score.playGoal then
+        self.score.playGoal:fire()
+      end
+    end
+
     if self.p2Data.score >= self.pointsToWin then
       print('GAME OVER! ' .. self.p2Data.name .. ' Wins!')
       self.p1Data.score = 0
       self.p2Data.score = 0
+      -- [NEW] Reset Scoreboard
+      if self.score then
+        if self.score.player1Score then
+          self.score.player1Score.value = 0
+        end
+        if self.score.player2Score then
+          self.score.player2Score.value = 0
+        end
+      end
       self.activeG1Height = 30
       self.activeG2Height = 30
     else
@@ -590,11 +637,35 @@ function advance(self: IceHockeyV1, seconds: number): boolean
     end
     resetPuck(self)
   elseif self.puck.x > fW + 30 then
+    -- Player 1 Goal
     self.p1Data.score = self.p1Data.score + 1
+
+    -- [NEW] Update Scoreboard for P1
+    if self.score then
+      if self.score.player1Score then
+        self.score.player1Score.value = self.p1Data.score
+      end
+      if self.score.mainColor then
+        self.score.mainColor.value = self.p1Data.color
+      end
+      if self.score.playGoal then
+        self.score.playGoal:fire()
+      end
+    end
+
     if self.p1Data.score >= self.pointsToWin then
       print('GAME OVER! ' .. self.p1Data.name .. ' Wins!')
       self.p1Data.score = 0
       self.p2Data.score = 0
+      -- [NEW] Reset Scoreboard
+      if self.score then
+        if self.score.player1Score then
+          self.score.player1Score.value = 0
+        end
+        if self.score.player2Score then
+          self.score.player2Score.value = 0
+        end
+      end
       self.activeG1Height = 30
       self.activeG2Height = 30
     else
@@ -632,6 +703,16 @@ function update(self: IceHockeyV1)
   -- Sync Input Names
   self.p1Data.name = self.player1Name
   self.p2Data.name = self.player2Name
+
+  -- [NEW] Sync Scoreboard Names
+  if self.score then
+    if self.score.player1Name then
+      self.score.player1Name.value = self.player1Name
+    end
+    if self.score.player2Name then
+      self.score.player2Name.value = self.player2Name
+    end
+  end
 end
 
 function draw(self: IceHockeyV1, renderer: Renderer)
@@ -683,6 +764,7 @@ return function(): Node<IceHockeyV1>
     powerupArtboard = late(),
     player1Goal = late(),
     player2Goal = late(),
+    score = late(),
 
     p1Instance = nil,
     p2Instance = nil,
