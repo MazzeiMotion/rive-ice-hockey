@@ -57,7 +57,7 @@ type IceHockeyV1 = {
   powerupArtboard: Input<Artboard<Data.PowerupVM>>,
   player1Goal: Input<Data.GoalVM>,
   player2Goal: Input<Data.GoalVM>,
-  score: Input<Data.ScoreVM>, -- New scoreboard view model
+  score: Input<Data.ScoreVM>, 
 
   -- Instances
   p1Instance: Artboard<Data.PlayerVM>?,
@@ -71,10 +71,14 @@ type IceHockeyV1 = {
 
   -- Game State
   lastTouchedBy: number,
-  -- [CHANGED] Map Pointer ID -> Entity for multi-touch
   activeDrags: { [number]: Entity },
+  
+  -- [NEW] Game Over State
+  isGameOver: boolean,
+  gameOverTimer: Input<number>,
+  gameResetTimer: number,
 
-  -- Player Data (Loaded via Require)
+  -- Player Data
   p1Data: any,
   p2Data: any,
 
@@ -143,6 +147,7 @@ local function resolveCollision(
   end
 end
 
+-- Helper for standard goal reset (mid-game)
 local function resetPuck(self: IceHockeyV1)
   self.puck.x = self.fieldWidth / 2
   self.puck.y = self.fieldHeight / 2
@@ -152,6 +157,24 @@ local function resetPuck(self: IceHockeyV1)
   local dir = (math.random() > 0.5) and 1 or -1
   self.puck.vx = 300 * dir
   self.puck.vy = (math.random() * 200) - 100
+end
+
+-- [NEW] Helper for Full Game Reset (after Game Over)
+local function fullReset(self: IceHockeyV1)
+  print("STARTING NEW GAME")
+  self.p1Data.score = 0
+  self.p2Data.score = 0
+  self.activeG1Height = 30
+  self.activeG2Height = 30
+  self.isGameOver = false
+  
+  -- Reset Scoreboard UI
+  if self.score then
+    if self.score.player1Score then self.score.player1Score.value = 0 end
+    if self.score.player2Score then self.score.player2Score.value = 0 end
+  end
+  
+  resetPuck(self)
 end
 
 -- ===========================================================================
@@ -357,7 +380,9 @@ end
 -- ===========================================================================
 
 function pointerDown(self: IceHockeyV1, event: PointerEvent)
-  -- [FIXED] Changed event.pointerId to event.id
+  -- Prevent interaction during Game Over sequence
+  if self.isGameOver then return end
+
   if
     dist(event.position.x, event.position.y, self.p1.x, self.p1.y)
     < self.p1.radius * 2.0
@@ -372,7 +397,8 @@ function pointerDown(self: IceHockeyV1, event: PointerEvent)
 end
 
 function pointerMove(self: IceHockeyV1, event: PointerEvent)
-  -- [FIXED] Changed event.pointerId to event.id
+  if self.isGameOver then return end
+  
   local entity = self.activeDrags[event.id]
   if entity then
     local oldX, oldY = entity.x, entity.y
@@ -384,7 +410,6 @@ function pointerMove(self: IceHockeyV1, event: PointerEvent)
 end
 
 function pointerUp(self: IceHockeyV1, event: PointerEvent)
-  -- [FIXED] Changed event.pointerId to event.id
   self.activeDrags[event.id] = nil
 end
 
@@ -429,7 +454,7 @@ function init(self: IceHockeyV1): boolean
   }
 
   self.lastTouchedBy = 0
-  self.activeDrags = {} -- Init Map
+  self.activeDrags = {} 
   self.powerups = {}
   self.spawnTimer = 0
   self.nextId = 1
@@ -437,31 +462,23 @@ function init(self: IceHockeyV1): boolean
   self.activeG2Height = 30
   self.zoneTimer = 0
   self.currentZone = 0
+  
+  -- [CHANGED] State for Game Over logic
+  self.isGameOver = false
+  self.gameResetTimer = 0 -- New internal counter
 
-  -- Init Player Data using the Helper
+  -- Init Player Data 
   self.p1Data = PlayerData.new(self.player1Name, 0xFFFF0F5C)
   self.p2Data = PlayerData.new(self.player2Name, 0xFF3B6AFA)
 
-  -- [NEW] Initialize Scoreboard
+  -- Initialize Scoreboard
   if self.score then
-    if self.score.player1Name then
-      self.score.player1Name.value = self.p1Data.name
-    end
-    if self.score.player2Name then
-      self.score.player2Name.value = self.p2Data.name
-    end
-    if self.score.player1Color then
-      self.score.player1Color.value = self.p1Data.color
-    end
-    if self.score.player2Color then
-      self.score.player2Color.value = self.p2Data.color
-    end
-    if self.score.player1Score then
-      self.score.player1Score.value = 0
-    end
-    if self.score.player2Score then
-      self.score.player2Score.value = 0
-    end
+    if self.score.player1Name then self.score.player1Name.value = self.p1Data.name end
+    if self.score.player2Name then self.score.player2Name.value = self.p2Data.name end
+    if self.score.player1Color then self.score.player1Color.value = self.p1Data.color end
+    if self.score.player2Color then self.score.player2Color.value = self.p2Data.color end
+    if self.score.player1Score then self.score.player1Score.value = 0 end
+    if self.score.player2Score then self.score.player2Score.value = 0 end
   end
 
   createMainArtboards(self)
@@ -472,15 +489,38 @@ end
 -- Helper to check if an entity is currently being dragged
 local function isEntityDragging(self: IceHockeyV1, entity: Entity): boolean
   for _, e in pairs(self.activeDrags) do
-    if e == entity then
-      return true
-    end
+    if e == entity then return true end
   end
   return false
 end
 
 function advance(self: IceHockeyV1, seconds: number): boolean
   createMainArtboards(self)
+
+  -- [CHANGED] Game Over Sequence Handler
+  if self.isGameOver then
+    -- Just ensure artboards draw correctly during pause
+    if self.p1Instance then self.p1Instance:advance(0) end
+    if self.p2Instance then self.p2Instance:advance(0) end
+    if self.puckInstance then self.puckInstance:advance(0) end
+
+    -- Countdown logic using internal timer
+    local prevTimer = math.ceil(self.gameResetTimer)
+    self.gameResetTimer = self.gameResetTimer - seconds
+    local currentTimer = math.ceil(self.gameResetTimer)
+    
+    if currentTimer < prevTimer and currentTimer > 0 then
+      print("New Game in... " .. currentTimer)
+    end
+
+    if self.gameResetTimer <= 0 then
+      fullReset(self)
+    end
+    return true
+  end
+
+  -- ==================== NORMAL GAMEPLAY LOOP ====================
+
   local fW, fH = self.fieldWidth, self.fieldHeight
 
   -- 1. APPLY EFFECTS
@@ -491,8 +531,6 @@ function advance(self: IceHockeyV1, seconds: number): boolean
   if self.p1Instance and self.p1Instance.data then
     self.p1Instance.data.sizeX.value = self.p1.radius * 2
     self.p1Instance.data.sizeY.value = self.p1.radius * 2
-
-    -- Sync isDragging (Multi-touch aware)
     if self.p1Instance.data.isDragging then
       self.p1Instance.data.isDragging.value = isEntityDragging(self, self.p1)
     end
@@ -501,15 +539,12 @@ function advance(self: IceHockeyV1, seconds: number): boolean
   if self.p2Instance and self.p2Instance.data then
     self.p2Instance.data.sizeX.value = self.p2.radius * 2
     self.p2Instance.data.sizeY.value = self.p2.radius * 2
-
-    -- Sync isDragging (Multi-touch aware)
     if self.p2Instance.data.isDragging then
       self.p2Instance.data.isDragging.value = isEntityDragging(self, self.p2)
     end
   end
 
   -- 2. PHYSICS
-  -- Only apply friction/inertia if NOT being dragged
   local entities = { self.p1, self.p2, self.puck }
   for _, e in ipairs(entities) do
     if not isEntityDragging(self, e) then
@@ -517,12 +552,8 @@ function advance(self: IceHockeyV1, seconds: number): boolean
       e.y = e.y + (e.vy * seconds)
       e.vx = e.vx * (1 - (1 - e.friction))
       e.vy = e.vy * (1 - (1 - e.friction))
-      if math.abs(e.vx) < 1 then
-        e.vx = 0
-      end
-      if math.abs(e.vy) < 1 then
-        e.vy = 0
-      end
+      if math.abs(e.vx) < 1 then e.vx = 0 end
+      if math.abs(e.vy) < 1 then e.vy = 0 end
     end
   end
 
@@ -535,8 +566,7 @@ function advance(self: IceHockeyV1, seconds: number): boolean
   else
     self.zoneTimer = self.zoneTimer + seconds
     if self.zoneTimer > self.maxZoneTime then
-      local zOwner = (self.currentZone == 1) and self.p1Data.name
-        or self.p2Data.name
+      local zOwner = (self.currentZone == 1) and self.p1Data.name or self.p2Data.name
       print('TIME LIMIT: ' .. zOwner .. '\'s Zone!')
       self.zoneTimer = 0
     end
@@ -569,21 +599,13 @@ function advance(self: IceHockeyV1, seconds: number): boolean
   local p2G = fH * (self.activeG2Height / 100)
 
   if self.puck.x < self.puck.radius then
-    if
-      not (
-        self.puck.y > (fH / 2 - p1G / 2) and self.puck.y < (fH / 2 + p1G / 2)
-      )
-    then
+    if not (self.puck.y > (fH / 2 - p1G / 2) and self.puck.y < (fH / 2 + p1G / 2)) then
       self.puck.x = self.puck.radius
       self.puck.vx = math.abs(self.puck.vx) * 0.8
     end
   end
   if self.puck.x > fW - self.puck.radius then
-    if
-      not (
-        self.puck.y > (fH / 2 - p2G / 2) and self.puck.y < (fH / 2 + p2G / 2)
-      )
-    then
+    if not (self.puck.y > (fH / 2 - p2G / 2) and self.puck.y < (fH / 2 + p2G / 2)) then
       self.puck.x = fW - self.puck.radius
       self.puck.vx = -math.abs(self.puck.vx) * 0.8
     end
@@ -597,96 +619,63 @@ function advance(self: IceHockeyV1, seconds: number): boolean
   updatePowerups(self, seconds)
 
   -- 9. SCORING
+  local function handleScore(scorerData: any, isP1Scoring: boolean)
+    scorerData.score = scorerData.score + 1
+    
+    -- Update Scoreboard
+    if self.score then
+      if isP1Scoring then
+        if self.score.player1Score then self.score.player1Score.value = scorerData.score end
+      else
+        if self.score.player2Score then self.score.player2Score.value = scorerData.score end
+      end
+      if self.score.mainColor then self.score.mainColor.value = scorerData.color end
+    end
+
+    -- Check Win Condition
+    if scorerData.score >= self.pointsToWin then
+      print('GAME OVER! ' .. scorerData.name .. ' Wins!')
+      
+      if self.score and self.score.playGameOver then
+        self.score.playGameOver:fire()
+      end
+      
+      self.isGameOver = true
+      
+      -- [FIX] Read the Input value (e.g. 10) and set internal timer
+      if self.gameOverTimer then
+        self.gameResetTimer = self.gameOverTimer
+      else
+        self.gameResetTimer = 4.0 -- Fallback if input is missing
+      end
+      
+      -- Stop puck
+      self.puck.vx = 0
+      self.puck.vy = 0
+      self.puck.x = fW/2 
+      self.puck.y = fH/2
+    else
+      -- Normal Goal
+      local msg = isP1Scoring and 'GOAL! ' or 'GOAL! '
+      print(msg .. scorerData.name .. ' (' .. self.p1Data.score .. '-' .. self.p2Data.score .. ')')
+      
+      if self.score and self.score.playGoal then
+        self.score.playGoal:fire()
+      end
+      resetPuck(self)
+    end
+  end
+
   if self.puck.x < -30 then
-    -- Player 2 Goal
-    self.p2Data.score = self.p2Data.score + 1
-
-    -- [NEW] Update Scoreboard for P2
-    if self.score then
-      if self.score.player2Score then
-        self.score.player2Score.value = self.p2Data.score
-      end
-      if self.score.mainColor then
-        self.score.mainColor.value = self.p2Data.color
-      end
-      if self.score.playGoal then
-        self.score.playGoal:fire()
-      end
-    end
-
-    if self.p2Data.score >= self.pointsToWin then
-      print('GAME OVER! ' .. self.p2Data.name .. ' Wins!')
-      self.p1Data.score = 0
-      self.p2Data.score = 0
-      -- [NEW] Reset Scoreboard
-      if self.score then
-        if self.score.player1Score then
-          self.score.player1Score.value = 0
-        end
-        if self.score.player2Score then
-          self.score.player2Score.value = 0
-        end
-      end
-      self.activeG1Height = 30
-      self.activeG2Height = 30
-    else
-      local msg = (self.lastTouchedBy == 1)
-          and ('OWN GOAL! ' .. self.p1Data.name)
-        or ('GOAL! ' .. self.p2Data.name)
-      print(msg .. ' (' .. self.p1Data.score .. '-' .. self.p2Data.score .. ')')
-    end
-    resetPuck(self)
+    handleScore(self.p2Data, false) -- P2 Scores
   elseif self.puck.x > fW + 30 then
-    -- Player 1 Goal
-    self.p1Data.score = self.p1Data.score + 1
-
-    -- [NEW] Update Scoreboard for P1
-    if self.score then
-      if self.score.player1Score then
-        self.score.player1Score.value = self.p1Data.score
-      end
-      if self.score.mainColor then
-        self.score.mainColor.value = self.p1Data.color
-      end
-      if self.score.playGoal then
-        self.score.playGoal:fire()
-      end
-    end
-
-    if self.p1Data.score >= self.pointsToWin then
-      print('GAME OVER! ' .. self.p1Data.name .. ' Wins!')
-      self.p1Data.score = 0
-      self.p2Data.score = 0
-      -- [NEW] Reset Scoreboard
-      if self.score then
-        if self.score.player1Score then
-          self.score.player1Score.value = 0
-        end
-        if self.score.player2Score then
-          self.score.player2Score.value = 0
-        end
-      end
-      self.activeG1Height = 30
-      self.activeG2Height = 30
-    else
-      local msg = (self.lastTouchedBy == 2)
-          and ('OWN GOAL! ' .. self.p2Data.name)
-        or ('GOAL! ' .. self.p1Data.name)
-      print(msg .. ' (' .. self.p1Data.score .. '-' .. self.p2Data.score .. ')')
-    end
-    resetPuck(self)
+    handleScore(self.p1Data, true) -- P1 Scores
   end
 
   -- 10. ANIMATIONS
-  if self.p1Instance then
-    self.p1Instance:advance(seconds)
-  end
-  if self.p2Instance then
-    self.p2Instance:advance(seconds)
-  end
-  if self.puckInstance then
-    self.puckInstance:advance(seconds)
-  end
+  if self.p1Instance then self.p1Instance:advance(seconds) end
+  if self.p2Instance then self.p2Instance:advance(seconds) end
+  if self.puckInstance then self.puckInstance:advance(seconds) end
 
   return true
 end
@@ -704,14 +693,10 @@ function update(self: IceHockeyV1)
   self.p1Data.name = self.player1Name
   self.p2Data.name = self.player2Name
 
-  -- [NEW] Sync Scoreboard Names
+  -- Sync Scoreboard Names
   if self.score then
-    if self.score.player1Name then
-      self.score.player1Name.value = self.player1Name
-    end
-    if self.score.player2Name then
-      self.score.player2Name.value = self.player2Name
-    end
+    if self.score.player1Name then self.score.player1Name.value = self.player1Name end
+    if self.score.player2Name then self.score.player2Name.value = self.player2Name end
   end
 end
 
@@ -769,47 +754,17 @@ return function(): Node<IceHockeyV1>
     p1Instance = nil,
     p2Instance = nil,
     puckInstance = nil,
-    dragTarget = nil,
-
+    
     puck = {
-      x = 0,
-      y = 0,
-      vx = 0,
-      vy = 0,
-      radius = 0,
-      mass = 0,
-      friction = 0,
-      baseRadius = 0,
-      baseFriction = 0,
-      effects = {},
+      x = 0, y = 0, vx = 0, vy = 0, radius = 0, mass = 0, friction = 0, baseRadius = 0, baseFriction = 0, effects = {},
     },
     p1 = {
-      x = 0,
-      y = 0,
-      vx = 0,
-      vy = 0,
-      radius = 0,
-      mass = 0,
-      friction = 0,
-      baseRadius = 0,
-      baseFriction = 0,
-      effects = {},
+      x = 0, y = 0, vx = 0, vy = 0, radius = 0, mass = 0, friction = 0, baseRadius = 0, baseFriction = 0, effects = {},
     },
     p2 = {
-      x = 0,
-      y = 0,
-      vx = 0,
-      vy = 0,
-      radius = 0,
-      mass = 0,
-      friction = 0,
-      baseRadius = 0,
-      baseFriction = 0,
-      effects = {},
+      x = 0, y = 0, vx = 0, vy = 0, radius = 0, mass = 0, friction = 0, baseRadius = 0, baseFriction = 0, effects = {},
     },
 
-    score1 = 0,
-    score2 = 0,
     lastTouchedBy = 0,
     activeDrags = {},
     powerups = {},
@@ -819,9 +774,11 @@ return function(): Node<IceHockeyV1>
     activeG2Height = 30,
     zoneTimer = 0,
     currentZone = 0,
+    
+    isGameOver = false,
+    gameOverTimer = 0,
+    gameResetTimer = 0,
 
-    -- These are just placeholders to satisfy the Type definition initially
-    -- They get overwritten by PlayerData.new() in init()
     p1Data = { name = 'P1', color = 0, score = 0 },
     p2Data = { name = 'P2', color = 0, score = 0 },
   }
