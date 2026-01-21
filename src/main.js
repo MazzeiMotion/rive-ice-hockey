@@ -8,6 +8,7 @@ const riveInstance = new rive.Rive({
   artboard: "Game",
   stateMachines: "State Machine 1",
   autoBind: true,
+  enableMultiTouch: true,
   layout: new rive.Layout({
     fit: rive.Fit.Layout,
     // layoutScaleFactor: 2, // 2x scale of the layout, when using `Fit.Layout`. This allows you to resize the layout as needed.
