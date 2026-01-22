@@ -21,6 +21,9 @@ type Entity = {
   baseRadius: number,
   baseFriction: number,
   effects: { StatusEffect },
+  -- For tracking position history to calculate velocity
+  prevX: number,
+  prevY: number,
 }
 
 type Powerup = {
@@ -430,11 +433,9 @@ function pointerMove(self: IceHockeyV1, event: PointerEvent)
   
   local entity = self.activeDrags[event.id]
   if entity then
-    local oldX, oldY = entity.x, entity.y
+    -- Just update position, velocity will be calculated in advance()
     entity.x = event.position.x
     entity.y = event.position.y
-    entity.vx = (entity.x - oldX) / 0.016
-    entity.vy = (entity.y - oldY) / 0.016
   end
 end
 
@@ -461,6 +462,8 @@ function init(self: IceHockeyV1): boolean
     friction = 0.99,
     baseFriction = 0.99,
     effects = {},
+    prevX = fW / 2,
+    prevY = fH / 2,
   }
   self.p1 = {
     x = 100,
@@ -473,6 +476,8 @@ function init(self: IceHockeyV1): boolean
     friction = 0.92,
     baseFriction = 0.92,
     effects = {},
+    prevX = 100,
+    prevY = fH / 2,
   }
   self.p2 = {
     x = fW - 100,
@@ -485,6 +490,8 @@ function init(self: IceHockeyV1): boolean
     friction = 0.92,
     baseFriction = 0.92,
     effects = {},
+    prevX = fW - 100,
+    prevY = fH / 2,
   }
 
   self.lastTouchedBy = 0
@@ -593,14 +600,24 @@ function advance(self: IceHockeyV1, seconds: number): boolean
   -- 2. PHYSICS
   local entities = { self.p1, self.p2, self.puck }
   for _, e in ipairs(entities) do
-    if not isEntityDragging(self, e) then
+    if isEntityDragging(self, e) then
+      -- For dragged entities, calculate velocity from position change
+      if seconds > 0 then
+        e.vx = (e.x - e.prevX) / seconds
+        e.vy = (e.y - e.prevY) / seconds
+      end
+    else
+      -- For non-dragged entities, apply physics
       e.x = e.x + (e.vx * seconds)
       e.y = e.y + (e.vy * seconds)
-      e.vx = e.vx * (1 - (1 - e.friction))
-      e.vy = e.vy * (1 - (1 - e.friction))
+      e.vx = e.vx * e.friction
+      e.vy = e.vy * e.friction
       if math.abs(e.vx) < 1 then e.vx = 0 end
       if math.abs(e.vy) < 1 then e.vy = 0 end
     end
+    -- Update previous position for next frame
+    e.prevX = e.x
+    e.prevY = e.y
   end
 
   -- 3. ZONE
@@ -860,13 +877,13 @@ return function(): Node<IceHockeyV1>
     puckInstance = nil,
     
     puck = {
-      x = 0, y = 0, vx = 0, vy = 0, radius = 0, mass = 0, friction = 0, baseRadius = 0, baseFriction = 0, effects = {},
+      x = 0, y = 0, vx = 0, vy = 0, radius = 0, mass = 0, friction = 0, baseRadius = 0, baseFriction = 0, effects = {}, prevX = 0, prevY = 0,
     },
     p1 = {
-      x = 0, y = 0, vx = 0, vy = 0, radius = 0, mass = 0, friction = 0, baseRadius = 0, baseFriction = 0, effects = {},
+      x = 0, y = 0, vx = 0, vy = 0, radius = 0, mass = 0, friction = 0, baseRadius = 0, baseFriction = 0, effects = {}, prevX = 0, prevY = 0,
     },
     p2 = {
-      x = 0, y = 0, vx = 0, vy = 0, radius = 0, mass = 0, friction = 0, baseRadius = 0, baseFriction = 0, effects = {},
+      x = 0, y = 0, vx = 0, vy = 0, radius = 0, mass = 0, friction = 0, baseRadius = 0, baseFriction = 0, effects = {}, prevX = 0, prevY = 0,
     },
 
     lastTouchedBy = 0,
