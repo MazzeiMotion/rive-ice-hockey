@@ -116,7 +116,7 @@ local function resolveCollision(
   local distance = math.sqrt(dx * dx + dy * dy)
   local minDist = player.radius + puck.radius
 
-  if distance < minDist then
+  if distance < minDist and distance > 0 then
     self.lastTouchedBy = playerId
     local nx = dx / distance
     local ny = dy / distance
@@ -128,9 +128,15 @@ local function resolveCollision(
     local dvy = puck.vy - player.vy
     local dot = (dvx * nx) + (dvy * ny)
 
-    if dot < 0 then
+    -- Apply impulse if objects are approaching (dot < 0)
+    -- OR if player has significant velocity (actively pushing the puck)
+    local playerSpeed = math.sqrt(player.vx * player.vx + player.vy * player.vy)
+    
+    if dot < 0 or playerSpeed > 10 then
       local restitution = 0.8
-      local impulse = -(1 + restitution) * dot
+      -- Use absolute value of dot for impulse calculation when player is pushing
+      local effectiveDot = (dot < 0) and dot or -math.abs(dot)
+      local impulse = -(1 + restitution) * effectiveDot
       puck.vx = puck.vx + (impulse * nx)
       puck.vy = puck.vy + (impulse * ny)
 
@@ -144,6 +150,9 @@ local function resolveCollision(
         puck.vx = puck.vx * scale
         puck.vy = puck.vy * scale
       end
+    else
+      -- Debug: only print when impulse is NOT applied
+      print("NO IMPULSE P" .. playerId .. " playerVx=" .. math.floor(player.vx) .. " playerVy=" .. math.floor(player.vy) .. " dot=" .. math.floor(dot) .. " speed=" .. math.floor(playerSpeed))
     end
   end
 end
@@ -409,6 +418,11 @@ function pointerDown(self: IceHockeyV1, event: PointerEvent)
   then
     self.activeDrags[event.id] = self.p2
   end
+  
+  -- Count active drags
+  local count = 0
+  for _ in pairs(self.activeDrags) do count = count + 1 end
+  print("pointerDown id=" .. event.id .. " activeDrags=" .. count)
 end
 
 function pointerMove(self: IceHockeyV1, event: PointerEvent)
@@ -426,6 +440,11 @@ end
 
 function pointerUp(self: IceHockeyV1, event: PointerEvent)
   self.activeDrags[event.id] = nil
+  
+  -- Count active drags
+  local count = 0
+  for _ in pairs(self.activeDrags) do count = count + 1 end
+  print("pointerUp id=" .. event.id .. " activeDrags=" .. count)
 end
 
 function init(self: IceHockeyV1): boolean
