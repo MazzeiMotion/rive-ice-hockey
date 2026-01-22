@@ -40,6 +40,7 @@ type IceHockeyV1 = {
   fieldWidth: Input<number>,
   fieldHeight: Input<number>,
   maxPuckSpeed: Input<number>,
+  dragSizeIncrease: Input<number>,
 
   -- Rules Inputs
   maxPowerups: Input<number>,
@@ -148,7 +149,8 @@ local function resolveCollision(
 end
 
 -- Helper for standard goal reset (mid-game)
-local function resetPuck(self: IceHockeyV1)
+-- blipColor is the color of the player's side where the puck will spawn
+local function resetPuck(self: IceHockeyV1, blipColor: number?)
   self.puck.x = self.fieldWidth / 2
   self.puck.y = self.fieldHeight / 2
   self.lastTouchedBy = 0
@@ -157,6 +159,16 @@ local function resetPuck(self: IceHockeyV1)
   local dir = (math.random() > 0.5) and 1 or -1
   self.puck.vx = 300 * dir
   self.puck.vy = (math.random() * 200) - 100
+  
+  -- Trigger blip with the destination player's color
+  if blipColor and self.puckInstance and self.puckInstance.data then
+    if self.puckInstance.data.blipColor then
+      self.puckInstance.data.blipColor.value = blipColor
+    end
+    if self.puckInstance.data.blipTrigger then
+      self.puckInstance.data.blipTrigger:fire()
+    end
+  end
 end
 
 -- [NEW] Helper for Full Game Reset (after Game Over)
@@ -174,7 +186,8 @@ local function fullReset(self: IceHockeyV1)
     if self.score.player2Score then self.score.player2Score.value = 0 end
   end
   
-  resetPuck(self)
+  -- Reset puck without blip (new game start)
+  resetPuck(self, nil)
 end
 
 -- ===========================================================================
@@ -194,21 +207,23 @@ local function addStatusEffect(entity: Entity, kind: string, duration: number)
   )
 end
 
-local function manageStatusEffects(entity: Entity, seconds: number)
-  entity.radius = entity.baseRadius
+-- Returns the powerup size multiplier for the entity
+local function manageStatusEffects(entity: Entity, seconds: number): number
   entity.friction = entity.baseFriction
+  local powerupMultiplier = 1.0
   for i = #entity.effects, 1, -1 do
     local fx = entity.effects[i]
     if fx.kind == 'giantPaddle' then
-      entity.radius = entity.baseRadius * 1.5
+      powerupMultiplier = 1.5
     elseif fx.kind == 'tinyPaddle' then
-      entity.radius = entity.baseRadius * 0.7
+      powerupMultiplier = 0.7
     end
     fx.timer = fx.timer - seconds
     if fx.timer <= 0 then
       table.remove(entity.effects, i)
     end
   end
+  return powerupMultiplier
 end
 
 local function applyPowerup(
@@ -524,15 +539,27 @@ function advance(self: IceHockeyV1, seconds: number): boolean
   local fW, fH = self.fieldWidth, self.fieldHeight
 
   -- 1. APPLY EFFECTS
-  manageStatusEffects(self.p1, seconds)
-  manageStatusEffects(self.p2, seconds)
+  local p1PowerupMultiplier = manageStatusEffects(self.p1, seconds)
+  local p2PowerupMultiplier = manageStatusEffects(self.p2, seconds)
 
-  -- Sync Visuals & UPDATE DRAGGING STATE
+  -- Sync Visuals & UPDATE DRAGGING STATE (including size increase when dragging)
+  local p1Dragging = isEntityDragging(self, self.p1)
+  local p2Dragging = isEntityDragging(self, self.p2)
+  
+  -- Apply drag size multiplier on top of powerup multiplier
+  local dragMultiplier = 1 + (self.dragSizeIncrease / 100)
+  local p1DragMultiplier = p1Dragging and dragMultiplier or 1.0
+  local p2DragMultiplier = p2Dragging and dragMultiplier or 1.0
+  
+  -- Combine powerup and drag multipliers for final radius
+  self.p1.radius = self.p1.baseRadius * p1PowerupMultiplier * p1DragMultiplier
+  self.p2.radius = self.p2.baseRadius * p2PowerupMultiplier * p2DragMultiplier
+
   if self.p1Instance and self.p1Instance.data then
     self.p1Instance.data.sizeX.value = self.p1.radius * 2
     self.p1Instance.data.sizeY.value = self.p1.radius * 2
     if self.p1Instance.data.isDragging then
-      self.p1Instance.data.isDragging.value = isEntityDragging(self, self.p1)
+      self.p1Instance.data.isDragging.value = p1Dragging
     end
   end
 
@@ -540,7 +567,7 @@ function advance(self: IceHockeyV1, seconds: number): boolean
     self.p2Instance.data.sizeX.value = self.p2.radius * 2
     self.p2Instance.data.sizeY.value = self.p2.radius * 2
     if self.p2Instance.data.isDragging then
-      self.p2Instance.data.isDragging.value = isEntityDragging(self, self.p2)
+      self.p2Instance.data.isDragging.value = p2Dragging
     end
   end
 
@@ -567,8 +594,54 @@ function advance(self: IceHockeyV1, seconds: number): boolean
     self.zoneTimer = self.zoneTimer + seconds
     if self.zoneTimer > self.maxZoneTime then
       local zOwner = (self.currentZone == 1) and self.p1Data.name or self.p2Data.name
+      local zOwnerColor = (self.currentZone == 1) and self.p1Data.color or self.p2Data.color
+      -- Destination player is the opposite of the current zone owner
+      local destinationColor = (self.currentZone == 1) and self.p2Data.color or self.p1Data.color
       print('TIME LIMIT: ' .. zOwner .. '\'s Zone!')
+      
+      -- Set the timed-out player's color on the scoreboard
+      if self.score and self.score.mainColor then
+        self.score.mainColor.value = zOwnerColor
+      end
+      
+      -- Rotate scoreboard to face the player who got timed out
+      -- P1 (zone 1) timed out = face P1 = 90 degrees
+      -- P2 (zone 2) timed out = face P2 = -90 degrees
+      local scoreRotation = (self.score :: any).scoreRotation
+      if scoreRotation then
+        scoreRotation.value = (self.currentZone == 1) and 90 or -90
+      end
+      
+      -- Fire the playTimeout trigger in the scoreboard view model
+      if self.score and self.score.playTimeout then
+        self.score.playTimeout:fire()
+      end
+      
+      -- Move the puck to the other player's side
+      if self.currentZone == 1 then
+        -- Puck was in Player 1's zone (left), move to Player 2's zone (right)
+        self.puck.x = mid + (fW / 4)
+      else
+        -- Puck was in Player 2's zone (right), move to Player 1's zone (left)
+        self.puck.x = fW / 4
+      end
+      self.puck.y = fH / 2
+      self.puck.vx = 0
+      self.puck.vy = 0
+      self.lastTouchedBy = 0
+      
+      -- Trigger blip with the destination player's color
+      if self.puckInstance and self.puckInstance.data then
+        if self.puckInstance.data.blipColor then
+          self.puckInstance.data.blipColor.value = destinationColor
+        end
+        if self.puckInstance.data.blipTrigger then
+          self.puckInstance.data.blipTrigger:fire()
+        end
+      end
+      
       self.zoneTimer = 0
+      self.currentZone = (self.currentZone == 1) and 2 or 1
     end
   end
 
@@ -630,6 +703,14 @@ function advance(self: IceHockeyV1, seconds: number): boolean
         if self.score.player2Score then self.score.player2Score.value = scorerData.score end
       end
       if self.score.mainColor then self.score.mainColor.value = scorerData.color end
+      
+      -- Rotate scoreboard to face the player who scored
+      -- P1 scored = face P1 = 90 degrees
+      -- P2 scored = face P2 = -90 degrees
+      local scoreRotation = (self.score :: any).scoreRotation
+      if scoreRotation then
+        scoreRotation.value = isP1Scoring and 90 or -90
+      end
     end
 
     -- Check Win Condition
@@ -662,7 +743,9 @@ function advance(self: IceHockeyV1, seconds: number): boolean
       if self.score and self.score.playGoal then
         self.score.playGoal:fire()
       end
-      resetPuck(self)
+      
+      -- Reset puck with blip color of the scoring player (puck spawns with their color)
+      resetPuck(self, scorerData.color)
     end
   end
 
@@ -704,6 +787,7 @@ function draw(self: IceHockeyV1, renderer: Renderer)
   local function drawEnt(inst: Artboard<any>?, e: Entity)
     if inst then
       renderer:save()
+      -- Use the entity radius for centering (already includes drag size increase)
       renderer:transform(Mat2D.withTranslation(e.x - e.radius, e.y - e.radius))
       inst:draw(renderer)
       renderer:restore()
@@ -737,6 +821,7 @@ return function(): Node<IceHockeyV1>
     fieldWidth = 500,
     fieldHeight = 300,
     maxPuckSpeed = 1000,
+    dragSizeIncrease = 20,
     maxPowerups = 5,
     spawnRate = 3.0,
     maxZoneTime = 7.0,
