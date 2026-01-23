@@ -61,7 +61,8 @@ type IceHockeyV1 = {
   powerupArtboard: Input<Artboard<Data.PowerupVM>>,
   player1Goal: Input<Data.GoalVM>,
   player2Goal: Input<Data.GoalVM>,
-  score: Input<Data.ScoreVM>, 
+  score: Input<Data.ScoreVM>,
+  middleGraphic: Input<Data.MiddleGraphicVM>, 
 
   -- Instances
   p1Instance: Artboard<Data.PlayerVM>?,
@@ -80,7 +81,9 @@ type IceHockeyV1 = {
   -- [NEW] Game Over State
   isGameOver: boolean,
   gameOverTimer: Input<number>,
+  gameOverDisplayTime: Input<number>,
   gameResetTimer: number,
+  newGameCountdownStarted: boolean,
 
   -- Player Data
   p1Data: any,
@@ -94,6 +97,9 @@ type IceHockeyV1 = {
   activeG2Height: number,
   zoneTimer: number,
   currentZone: number,
+  
+  -- Countdown tracking
+  countdownStarted: boolean,
 }
 
 -- ===========================================================================
@@ -153,6 +159,15 @@ local function resolveCollision(
         puck.vx = puck.vx * scale
         puck.vy = puck.vy * scale
       end
+      
+      -- Fire triggerCollision on the player's artboard instance
+      local playerInstance = (playerId == 1) and self.p1Instance or self.p2Instance
+      if playerInstance and playerInstance.data then
+        local triggerCollision = (playerInstance.data :: any).triggerCollision
+        if triggerCollision then
+          triggerCollision:fire()
+        end
+      end
     else
       -- Debug: only print when impulse is NOT applied
       print("NO IMPULSE P" .. playerId .. " playerVx=" .. math.floor(player.vx) .. " playerVy=" .. math.floor(player.vy) .. " dot=" .. math.floor(dot) .. " speed=" .. math.floor(playerSpeed))
@@ -191,6 +206,7 @@ local function fullReset(self: IceHockeyV1)
   self.activeG1Height = 30
   self.activeG2Height = 30
   self.isGameOver = false
+  self.newGameCountdownStarted = false
   
   -- Reset Scoreboard UI
   if self.score then
@@ -397,6 +413,13 @@ local function createMainArtboards(self: IceHockeyV1)
         if inst.data.sizeY then
           inst.data.sizeY.value = self.puck.baseRadius * 2
         end
+        -- Trigger blip when puck first spawns with white color
+        if inst.data.blipColor then
+          inst.data.blipColor.value = 0xFFFFFFFF -- White
+        end
+        if inst.data.blipTrigger then
+          inst.data.blipTrigger:fire()
+        end
       end
     end
   end
@@ -503,10 +526,12 @@ function init(self: IceHockeyV1): boolean
   self.activeG2Height = 30
   self.zoneTimer = 0
   self.currentZone = 0
+  self.countdownStarted = false
   
   -- [CHANGED] State for Game Over logic
   self.isGameOver = false
   self.gameResetTimer = 0 -- New internal counter
+  self.newGameCountdownStarted = false
 
   -- Init Player Data 
   self.p1Data = PlayerData.new(self.player1Name, 0xFFFF0F5C)
@@ -546,17 +571,72 @@ function advance(self: IceHockeyV1, seconds: number): boolean
     if self.puckInstance then self.puckInstance:advance(0) end
 
     -- Countdown logic using internal timer
-    local prevTimer = math.ceil(self.gameResetTimer)
+    local prevTimer = self.gameResetTimer
     self.gameResetTimer = self.gameResetTimer - seconds
-    local currentTimer = math.ceil(self.gameResetTimer)
     
-    if currentTimer < prevTimer and currentTimer > 0 then
-      print("New Game in... " .. currentTimer)
+    -- When display time ends: fire playGameOver again to dismiss, reset rotation, start countdown
+    if not self.newGameCountdownStarted and self.gameResetTimer <= 0 then
+      print("Starting new game countdown. Previous timer was: " .. prevTimer)
+      self.newGameCountdownStarted = true
+      
+      -- Fire playGameOver second time (to disappear)
+      if self.score and self.score.playGameOver then
+        self.score.playGameOver:fire()
+      end
+      
+      -- Reset scoreRotation back to 0
+      if self.score then
+        local scoreRotation = (self.score :: any).scoreRotation
+        if scoreRotation then
+          scoreRotation.value = 0
+        end
+      end
+      
+      -- Fire triggerCountdown on middleGraphic for new game countdown
+      local middleGraphic = (self :: any).middleGraphic
+      if middleGraphic then
+        local triggerCountdown = middleGraphic.triggerCountdown
+        if triggerCountdown then
+          triggerCountdown:fire()
+        end
+      end
+      
+      -- Now set timer to the actual countdown time (gameOverTimer)
+      if self.gameOverTimer then
+        self.gameResetTimer = self.gameOverTimer
+      else
+        self.gameResetTimer = 3.0 -- Fallback if input is missing
+      end
     end
-
-    if self.gameResetTimer <= 0 then
-      fullReset(self)
+    
+    -- Update timeoutCountdown on middleGraphic (only after countdown started)
+    if self.newGameCountdownStarted then
+      local currentTimer = math.ceil(self.gameResetTimer)
+      
+      if currentTimer > 0 then
+        local middleGraphic = (self :: any).middleGraphic
+        if middleGraphic then
+          local timeoutCountdown = middleGraphic.timeoutCountdown
+          if timeoutCountdown then
+            timeoutCountdown.value = currentTimer
+          end
+        end
+      end
+      
+      if self.gameResetTimer <= 0 then
+        -- Fire triggerCountdown again to dismiss
+        local middleGraphic = (self :: any).middleGraphic
+        if middleGraphic then
+          local triggerCountdown = middleGraphic.triggerCountdown
+          if triggerCountdown then
+            triggerCountdown:fire()
+          end
+        end
+        
+        fullReset(self)
+      end
     end
+    
     return true
   end
 
@@ -624,10 +704,69 @@ function advance(self: IceHockeyV1, seconds: number): boolean
   local mid = fW / 2
   local newZone = (self.puck.x < mid) and 1 or 2
   if newZone ~= self.currentZone then
+    -- Fire triggerCountdown to reset if countdown was active
+    if self.countdownStarted then
+      local middleGraphic = (self :: any).middleGraphic
+      if middleGraphic then
+        local triggerCountdown = middleGraphic.triggerCountdown
+        if triggerCountdown then
+          triggerCountdown:fire()
+        end
+      end
+      self.countdownStarted = false
+    end
     self.currentZone = newZone
     self.zoneTimer = 0
   else
     self.zoneTimer = self.zoneTimer + seconds
+    
+    -- Countdown logic: trigger when 3 seconds remaining
+    local timeRemaining = self.maxZoneTime - self.zoneTimer
+    if timeRemaining <= 3 and timeRemaining > 0 then
+      local countdownNumber = math.ceil(timeRemaining)
+      
+      -- Fire triggerCountdown when we first enter the 3-second window
+      if not self.countdownStarted then
+        self.countdownStarted = true
+        local middleGraphic = (self :: any).middleGraphic
+        if middleGraphic then
+          local triggerCountdown = middleGraphic.triggerCountdown
+          if triggerCountdown then
+            triggerCountdown:fire()
+          end
+        end
+        
+        -- Rotate scoreboard to face the player being counted down
+        -- P1 (zone 1) = face P1 = 90 degrees
+        -- P2 (zone 2) = face P2 = -90 degrees
+        if self.score then
+          local scoreRotation = (self.score :: any).scoreRotation
+          if scoreRotation then
+            scoreRotation.value = (self.currentZone == 1) and 90 or -90
+          end
+        end
+      end
+      
+      -- Update the countdown number
+      local middleGraphic = (self :: any).middleGraphic
+      if middleGraphic then
+        local timeoutCountdown = middleGraphic.timeoutCountdown
+        if timeoutCountdown then
+          timeoutCountdown.value = countdownNumber
+        end
+      end
+    elseif self.countdownStarted and timeRemaining <= 0 then
+      -- Fire triggerCountdown again to reset when countdown finishes
+      local middleGraphic = (self :: any).middleGraphic
+      if middleGraphic then
+        local triggerCountdown = middleGraphic.triggerCountdown
+        if triggerCountdown then
+          triggerCountdown:fire()
+        end
+      end
+      self.countdownStarted = false
+    end
+    
     if self.zoneTimer > self.maxZoneTime then
       local zOwner = (self.currentZone == 1) and self.p1Data.name or self.p2Data.name
       local zOwnerColor = (self.currentZone == 1) and self.p1Data.color or self.p2Data.color
@@ -678,6 +817,7 @@ function advance(self: IceHockeyV1, seconds: number): boolean
       
       self.zoneTimer = 0
       self.currentZone = (self.currentZone == 1) and 2 or 1
+      self.countdownStarted = false
     end
   end
 
@@ -753,18 +893,42 @@ function advance(self: IceHockeyV1, seconds: number): boolean
     if scorerData.score >= self.pointsToWin then
       print('GAME OVER! ' .. scorerData.name .. ' Wins!')
       
-      if self.score and self.score.playGameOver then
-        self.score.playGameOver:fire()
+      if self.score then
+        -- Set the winning player's color
+        if self.score.mainColor then
+          self.score.mainColor.value = scorerData.color
+        end
+        
+        -- Set the main player text to show winner
+        local mainPlayer = (self.score :: any).mainPlayer
+        if mainPlayer then
+          mainPlayer.value = scorerData.name .. "\nWins!"
+        end
+        
+        -- Rotate scoreboard to face the winner
+        -- P1 won = face P1 = 90 degrees
+        -- P2 won = face P2 = -90 degrees
+        local scoreRotation = (self.score :: any).scoreRotation
+        if scoreRotation then
+          scoreRotation.value = isP1Scoring and 90 or -90
+        end
+        
+        -- Fire playGameOver (first time - to show game over)
+        if self.score.playGameOver then
+          self.score.playGameOver:fire()
+        end
       end
       
       self.isGameOver = true
+      self.newGameCountdownStarted = false
       
-      -- [FIX] Read the Input value (e.g. 10) and set internal timer
-      if self.gameOverTimer then
-        self.gameResetTimer = self.gameOverTimer
-      else
-        self.gameResetTimer = 4.0 -- Fallback if input is missing
+      -- Set timer to display time (time before countdown starts)
+      local displayTime = self.gameOverDisplayTime or 3.0
+      if displayTime < 1.0 then
+        displayTime = 3.0 -- Ensure minimum display time
       end
+      self.gameResetTimer = displayTime
+      print("Game Over! Display time: " .. displayTime)
       
       -- Stop puck
       self.puck.vx = 0
@@ -841,7 +1005,11 @@ function draw(self: IceHockeyV1, renderer: Renderer)
 
   drawEnt(self.p1Instance, self.p1)
   drawEnt(self.p2Instance, self.p2)
-  drawEnt(self.puckInstance, self.puck)
+  
+  -- Hide puck during game over sequence
+  if not self.isGameOver then
+    drawEnt(self.puckInstance, self.puck)
+  end
 end
 
 return function(): Node<IceHockeyV1>
@@ -871,6 +1039,7 @@ return function(): Node<IceHockeyV1>
     player1Goal = late(),
     player2Goal = late(),
     score = late(),
+    middleGraphic = late(),
 
     p1Instance = nil,
     p2Instance = nil,
@@ -895,10 +1064,13 @@ return function(): Node<IceHockeyV1>
     activeG2Height = 30,
     zoneTimer = 0,
     currentZone = 0,
+    countdownStarted = false,
     
     isGameOver = false,
-    gameOverTimer = 0,
+    gameOverTimer = 3,
+    gameOverDisplayTime = 3,
     gameResetTimer = 0,
+    newGameCountdownStarted = false,
 
     p1Data = { name = 'P1', color = 0, score = 0 },
     p2Data = { name = 'P2', color = 0, score = 0 },
