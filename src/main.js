@@ -16,6 +16,13 @@ const riveInstance = new rive.Rive({
 
   onLoad: () => {
     computeSize();
+    let vmi = rive.viewModelInstance;
+
+    // Player Colors
+    const player1Color = vmi.color("setPlayer1Color").value;
+    const player2Color = vmi.color("setPlayer2Color").value;
+    player1Color.value = 0xff000000; // Set color to black with 100% opacity
+    player1Color.value = 0xff000000; // Set color to black with 100% opacity
   },
 });
 
