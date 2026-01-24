@@ -54,6 +54,8 @@ type IceHockeyV1 = {
   -- Player Inputs
   player1Name: Input<string>,
   player2Name: Input<string>,
+  player1Color: Input<Color>,
+  player2Color: Input<Color>,
 
   -- Assets
   playerArtboard: Input<Artboard<Data.PlayerVM>>,
@@ -100,6 +102,9 @@ type IceHockeyV1 = {
   
   -- Countdown tracking
   countdownStarted: boolean,
+  
+  -- Track if initial positioning has been done
+  initialPositionSet: boolean,
 }
 
 -- ===========================================================================
@@ -312,6 +317,13 @@ local function spawnPowerup(self: IceHockeyV1)
     if inst.data.kind then
       inst.data.kind.value = kind
     end
+    -- Rotate powerup to face the player on that side of the field
+    -- Left side (P1's zone) = 90 degrees, Right side (P2's zone) = -90 degrees
+    local powerupRotation = (inst.data :: any).powerupRotation
+    if powerupRotation then
+      local mid = fW / 2
+      powerupRotation.value = (px < mid) and 90 or -90
+    end
   end
 
   table.insert(self.powerups, {
@@ -431,8 +443,6 @@ end
 
 function pointerDown(self: IceHockeyV1, event: PointerEvent)
   -- Prevent interaction during Game Over sequence
-  if self.isGameOver then return end
-
   if
     dist(event.position.x, event.position.y, self.p1.x, self.p1.y)
     < self.p1.radius * 2.0
@@ -452,8 +462,6 @@ function pointerDown(self: IceHockeyV1, event: PointerEvent)
 end
 
 function pointerMove(self: IceHockeyV1, event: PointerEvent)
-  if self.isGameOver then return end
-  
   local entity = self.activeDrags[event.id]
   if entity then
     -- Just update position, velocity will be calculated in advance()
@@ -488,8 +496,11 @@ function init(self: IceHockeyV1): boolean
     prevX = fW / 2,
     prevY = fH / 2,
   }
+  -- Players spawn at 20% from their respective edges, centered vertically
+  local p1SpawnX = fW * 0.2
+  local p2SpawnX = fW * 0.8
   self.p1 = {
-    x = 100,
+    x = p1SpawnX,
     y = fH / 2,
     vx = 0,
     vy = 0,
@@ -499,11 +510,11 @@ function init(self: IceHockeyV1): boolean
     friction = 0.92,
     baseFriction = 0.92,
     effects = {},
-    prevX = 100,
+    prevX = p1SpawnX,
     prevY = fH / 2,
   }
   self.p2 = {
-    x = fW - 100,
+    x = p2SpawnX,
     y = fH / 2,
     vx = 0,
     vy = 0,
@@ -513,7 +524,7 @@ function init(self: IceHockeyV1): boolean
     friction = 0.92,
     baseFriction = 0.92,
     effects = {},
-    prevX = fW - 100,
+    prevX = p2SpawnX,
     prevY = fH / 2,
   }
 
@@ -527,15 +538,18 @@ function init(self: IceHockeyV1): boolean
   self.zoneTimer = 0
   self.currentZone = 0
   self.countdownStarted = false
+  self.initialPositionSet = false
   
   -- [CHANGED] State for Game Over logic
   self.isGameOver = false
   self.gameResetTimer = 0 -- New internal counter
   self.newGameCountdownStarted = false
 
-  -- Init Player Data 
-  self.p1Data = PlayerData.new(self.player1Name, 0xFFFF0F5C)
-  self.p2Data = PlayerData.new(self.player2Name, 0xFF3B6AFA)
+  -- Init Player Data (use input colors, with defaults if not set)
+  local p1ColorValue = self.player1Color or 0xFFFF0F5C
+  local p2ColorValue = self.player2Color or 0xFF3B6AFA
+  self.p1Data = PlayerData.new(self.player1Name, p1ColorValue)
+  self.p2Data = PlayerData.new(self.player2Name, p2ColorValue)
 
   -- Initialize Scoreboard
   if self.score then
@@ -565,11 +579,6 @@ function advance(self: IceHockeyV1, seconds: number): boolean
 
   -- [CHANGED] Game Over Sequence Handler
   if self.isGameOver then
-    -- Just ensure artboards draw correctly during pause
-    if self.p1Instance then self.p1Instance:advance(0) end
-    if self.p2Instance then self.p2Instance:advance(0) end
-    if self.puckInstance then self.puckInstance:advance(0) end
-
     -- Countdown logic using internal timer
     local prevTimer = self.gameResetTimer
     self.gameResetTimer = self.gameResetTimer - seconds
@@ -637,7 +646,7 @@ function advance(self: IceHockeyV1, seconds: number): boolean
       end
     end
     
-    return true
+    -- Continue with player physics during game over (but skip puck/scoring logic)
   end
 
   -- ==================== NORMAL GAMEPLAY LOOP ====================
@@ -678,7 +687,11 @@ function advance(self: IceHockeyV1, seconds: number): boolean
   end
 
   -- 2. PHYSICS
-  local entities = { self.p1, self.p2, self.puck }
+  -- During game over, only process player entities (not puck)
+  local entities: { Entity } = { self.p1, self.p2 }
+  if not self.isGameOver then
+    table.insert(entities, self.puck)
+  end
   for _, e in ipairs(entities) do
     if isEntityDragging(self, e) then
       -- For dragged entities, calculate velocity from position change
@@ -698,6 +711,20 @@ function advance(self: IceHockeyV1, seconds: number): boolean
     -- Update previous position for next frame
     e.prevX = e.x
     e.prevY = e.y
+  end
+
+  -- 4. CONSTRAINTS (always apply to players)
+  self.p1.x = clamp(self.p1.x, self.p1.radius, (fW / 2) - self.p1.radius)
+  self.p1.y = clamp(self.p1.y, self.p1.radius, fH - self.p1.radius)
+  self.p2.x = clamp(self.p2.x, (fW / 2) + self.p2.radius, fW - self.p2.radius)
+  self.p2.y = clamp(self.p2.y, self.p2.radius, fH - self.p2.radius)
+
+  -- Skip puck-related logic during game over
+  if self.isGameOver then
+    -- 10. ANIMATIONS (players only during game over)
+    if self.p1Instance then self.p1Instance:advance(seconds) end
+    if self.p2Instance then self.p2Instance:advance(seconds) end
+    return true
   end
 
   -- 3. ZONE
@@ -820,12 +847,6 @@ function advance(self: IceHockeyV1, seconds: number): boolean
       self.countdownStarted = false
     end
   end
-
-  -- 4. CONSTRAINTS
-  self.p1.x = clamp(self.p1.x, self.p1.radius, (fW / 2) - self.p1.radius)
-  self.p1.y = clamp(self.p1.y, self.p1.radius, fH - self.p1.radius)
-  self.p2.x = clamp(self.p2.x, (fW / 2) + self.p2.radius, fW - self.p2.radius)
-  self.p2.y = clamp(self.p2.y, self.p2.radius, fH - self.p2.radius)
 
   -- 5. GOAL SYNC
   if self.player1Goal and self.player1Goal.height then
@@ -965,6 +986,32 @@ end
 
 function update(self: IceHockeyV1)
   local fW, fH = self.fieldWidth, self.fieldHeight
+  
+  -- Set initial positions based on actual field dimensions (runs once)
+  if not self.initialPositionSet then
+    self.initialPositionSet = true
+    
+    -- Players spawn at 20% from their respective edges, centered vertically
+    local p1SpawnX = fW * 0.2
+    local p2SpawnX = fW * 0.8
+    
+    self.p1.x = p1SpawnX
+    self.p1.y = fH / 2
+    self.p1.prevX = p1SpawnX
+    self.p1.prevY = fH / 2
+    
+    self.p2.x = p2SpawnX
+    self.p2.y = fH / 2
+    self.p2.prevX = p2SpawnX
+    self.p2.prevY = fH / 2
+    
+    -- Puck at center
+    self.puck.x = fW / 2
+    self.puck.y = fH / 2
+    self.puck.prevX = fW / 2
+    self.puck.prevY = fH / 2
+  end
+  
   self.p1.x = clamp(self.p1.x, self.p1.radius, (fW / 2) - self.p1.radius)
   self.p1.y = clamp(self.p1.y, self.p1.radius, fH - self.p1.radius)
   self.p2.x = clamp(self.p2.x, (fW / 2) + self.p2.radius, fW - self.p2.radius)
@@ -976,10 +1023,28 @@ function update(self: IceHockeyV1)
   self.p1Data.name = self.player1Name
   self.p2Data.name = self.player2Name
 
-  -- Sync Scoreboard Names
+  -- Sync Input Colors (convert to signed int for Rive)
+  if self.player1Color then
+    self.p1Data.color = PlayerData.toColor(self.player1Color)
+  end
+  if self.player2Color then
+    self.p2Data.color = PlayerData.toColor(self.player2Color)
+  end
+
+  -- Sync Scoreboard Names and Colors
   if self.score then
     if self.score.player1Name then self.score.player1Name.value = self.player1Name end
     if self.score.player2Name then self.score.player2Name.value = self.player2Name end
+    if self.score.player1Color then self.score.player1Color.value = self.p1Data.color end
+    if self.score.player2Color then self.score.player2Color.value = self.p2Data.color end
+  end
+
+  -- Sync Player Artboard Colors
+  if self.p1Instance and self.p1Instance.data and self.p1Instance.data.color then
+    self.p1Instance.data.color.value = self.p1Data.color
+  end
+  if self.p2Instance and self.p2Instance.data and self.p2Instance.data.color then
+    self.p2Instance.data.color.value = self.p2Data.color
   end
 end
 
@@ -1032,6 +1097,8 @@ return function(): Node<IceHockeyV1>
     pointsToWin = 5,
     player1Name = 'Player 1',
     player2Name = 'Player 2',
+    player1Color = 0xFFFF0F5C,
+    player2Color = 0xFF3B6AFA,
 
     playerArtboard = late(),
     puckArtboard = late(),
@@ -1065,6 +1132,7 @@ return function(): Node<IceHockeyV1>
     zoneTimer = 0,
     currentZone = 0,
     countdownStarted = false,
+    initialPositionSet = false,
     
     isGameOver = false,
     gameOverTimer = 3,

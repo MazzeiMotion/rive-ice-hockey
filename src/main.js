@@ -2,7 +2,7 @@
 // https://rive.app/community/doc/web-js/docvlgbnS1mp
 
 const riveInstance = new rive.Rive({
-  src: "ea_ice_hockey_scripting.riv",
+  src: "scripted_ice_hockey.riv",
   canvas: document.getElementById("canvas"),
   autoplay: true,
   artboard: "Game",
